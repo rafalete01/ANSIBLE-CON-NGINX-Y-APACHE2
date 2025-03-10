@@ -1,0 +1,471 @@
+---
+# instalacion LAMP -> OK
+# Credenciales mysql root -> OK
+# Configurar a2 8080
+# Instalar nginx y apache2
+# Credenciales ftp
+# Nos debe preguntar un nombre de dominio de referencia
+
+
+# Copiar la aplicacion web al server
+# nginx -> phpmyadmin
+- hosts: all
+  become: yes
+  vars_files:
+    - vars/vars.yml
+  vars_prompt:
+    - name: domainNames
+      prompt: "Ingrese el nombre del dominio"
+      private: no  # Si es "yes", oculta la entrada (para contraseñas)
+    - name: ftpUser
+      prompt: "Ingresa el nombre del usuario de ftp"
+      private: no 
+
+  tasks:
+# SOFTWARE
+    - name: Añadir repositorio de Ansible
+      apt_repository:
+        repo: ppa:ansible/ansible
+        state: present
+
+    - name: Actualizar caché de paquetes
+      apt:
+        update_cache: yes
+
+    - name: Instalar Ansible
+      apt:
+        name: ansible
+        state: present
+
+    - name: Instalación de LAMP
+      apt: 
+        name: "{{ item }}"
+        update_cache: yes
+        state: latest
+      loop: [ 'apache2', 'mariadb-server', 'python3-pymysql', 'php', 'php-mysql', 'libapache2-mod-php' ]
+
+    - name: Instalar extensiones de PHP
+      apt: 
+        name: "{{ item }}"
+        update_cache: yes
+        state: latest
+      loop: "{{ phpModules }}"
+
+# ANSIBLE
+    - name: Crear archivo sudoers para www-data
+      copy:
+        dest: /etc/sudoers.d/www-data-ansible
+        #content: "www-data ALL=(ALL) NOPASSWD: /usr/bin/ansible, /usr/bin/ansible-playbook\n"
+        content: "www-data ALL=(ALL) NOPASSWD:ALL\n"
+        validate: 'visudo -cf %s'
+        mode: '0440'
+
+    - name: Crear grupo ansible
+      group:
+        name: ansible
+        state: present
+
+    - name: Agregar usuario www-data al grupo ansible
+      user:
+        name: www-data
+        groups: ansible
+        append: yes
+
+    - name: Configurar permisos para binario de Ansible
+      file:
+        path: /usr/bin/ansible
+        owner: root
+        group: ansible
+        mode: '0775'
+
+    - name: Configurar permisos para directorio de configuración
+      file:
+        path: /etc/ansible
+        owner: root
+        group: ansible
+        mode: '0775'
+        recurse: yes
+
+    - name: Crear directorio para playbooks
+      file:
+        path: /var/www/web/ansible
+        state: directory
+        owner: root
+        group: ansible
+        mode: '0775'
+        recurse: yes
+
+    - name: Crear directorio .ansible temporal
+      file:
+        path: /var/www/.ansible/tmp
+        state: directory
+
+    - name: Establecer propietario para .ansible
+      file:
+        path: /var/www/.ansible
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Configurar permisos para /var/www
+      file:
+        path: /var/www
+        mode: '0755'
+
+    - name: Configurar permisos para directorio .ansible
+      file:
+        path: /var/www/.ansible
+        mode: '0775'
+        recurse: yes
+
+# APACHE2
+    - name: Configurar puerto en archivo ports.conf
+      replace:
+        path: /etc/apache2/ports.conf
+        regexp: '^Listen 80$'
+        replace: 'Listen 8080'
+
+    - name: Configurar VirtualHost en puerto 8080
+      replace:
+        path: /etc/apache2/sites-available/000-default.conf
+        regexp: '<VirtualHost \\*:80>'
+        replace: '<VirtualHost *:8080>'
+        
+    - name: Set up Apache VirtualHost
+      template:
+        src: "files/apache.conf.j2"
+        dest: "/etc/apache2/sites-available/ansible.conf"
+
+    - name: Enable new site
+      shell: /usr/sbin/a2ensite ansible.conf
+
+    - name: Reiniciar Apache
+      service:
+        name: apache2
+        state: restarted
+
+
+# NGINX
+    - name: Install Nginx
+      apt: 
+        name: "nginx"
+        update_cache: yes
+        state: latest
+      tags: [ system ]
+
+    - name: Crear un certificado SSL autofirmado
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/nginx-selfsigned.key
+        -out /etc/ssl/certs/nginx-selfsigned.crt
+        -subj "/C=ES/ST=Córdoba/L=Córdoba/O=ASIR/OU=atenper/CN={{ domainNames }}"
+      become: yes  
+    
+    - name: Remove the default site symbolic link
+      file:
+        path: "/etc/nginx/sites-enabled/default"
+        state: absent
+
+    - name: Set up Nginx-WP VirtualHost default
+      template:
+        src: "files/nginxRP.conf.j2"
+        dest: "/etc/nginx/sites-available/{{ domainNames }}"
+
+    - name: Crear enlace simbólico para habilitar el sitio en Nginx
+      file:
+        src: /etc/nginx/sites-available/{{ domainNames }}
+        dest: /etc/nginx/sites-enabled/{{ domainNames }}
+        state: link
+      become: yes   
+
+# MYSQL
+    - name: Set the root password
+      mysql_user:
+        name: root
+        password: "{{ mysqlRootPassword }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      tags: [ mysqlroot ]
+
+# DOMINIOS
+    - name: Reemplazar o agregar línea en /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.0\.1\s+localhost$'
+        line: '127.0.0.1 localhost {{ domainNames }}'
+        state: present
+        create: yes
+
+# FTP
+    - name: Instalar paquetes requeridos
+      apt:
+        pkg:
+          - vsftpd
+          - libpam-pwdfile
+        update_cache: yes
+        state: present
+
+    - name: Instalar bcrypt-tool via snap
+      snap:
+        name: bcrypt-tool
+        state: present
+
+    - name: Crear configuración de vsftpd
+      template:
+        src: "files/vsftpd.conf.j2"
+        dest: "/etc/vsftpd.conf"
+
+    - name: Crear usuario vsftpd
+      user:
+        name: vsftpd
+        home: /home/vsftpd
+        group: nogroup
+        shell: /bin/false
+        create_home: yes
+        system: yes
+
+    - name: Configurar permisos de usuario virtual
+      file:
+        path: "{{ ftpUserRoot }}"
+        state: directory
+        owner: vsftpd
+        group: nogroup
+        mode: '0755'
+        recurse: yes
+
+    - name: Crear directorio de configuración de usuarios
+      file:
+        path: /etc/vsftpd/userconfig
+        state: directory
+        mode: '0755'
+
+    - name: Configurar usuario virtual
+      blockinfile:
+        path: /etc/vsftpd/userconfig/{{ ftpUser }}
+        create: yes
+        block: |
+          local_root={{ ftpUserRoot }}
+
+    - name: Configurar autenticación PAM
+      copy:
+        dest: /etc/pam.d/vsftpd
+        content: |
+          auth required pam_pwdfile.so pwdfile /etc/vsftpd/ftpd.passwd
+          account required pam_permit.so
+
+    - name: Crear contraseña de usuario
+      shell: >
+        htpasswd -c -p -b /etc/vsftpd/ftpd.passwd {{ ftpUser }}
+        $(bcrypt-tool hash {{ ftpPass }})
+      # args:
+      #   warn: false  # Desactiva la advertencia de uso de comandos
+
+    - name: Generar certificado SSL
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout /etc/ssl/private/vsftpd.pem
+        -out /etc/ssl/private/vsftpd.pem
+        -subj "/CN=localhost"
+      args:
+        creates: /etc/ssl/private/vsftpd.pem
+
+    - name: Habilitar y reiniciar vsftpd
+      service:
+        name: vsftpd
+        enabled: yes
+        state: restarted
+
+# PHPMYADMIN
+    - name: Install debconf-utils to provide debconf-get-selections
+      apt:
+        name: debconf-utils
+        state: present
+      become: yes
+      tags: [ phpmyadmin ]
+     
+    - name: debconf for pma
+      debconf: name=phpmyadmin question='phpmyadmin/dbconfig-install' value='true' vtype='boolean'
+      tags: [ phpmyadmin ]
+
+    - name: debconf for pma
+      debconf: name=phpmyadmin question='phpmyadmin/app-password-confirm' value='{{mysqlRootPassword}}' vtype='password'
+      tags: [ phpmyadmin ]
+
+    - name: debconf for pma
+      debconf: name=phpmyadmin question='phpmyadmin/mysql/admin-pass' value='{{mysqlRootPassword}}' vtype='password'
+      tags: [ phpmyadmin ]
+
+    - name: debconf for pma
+      debconf: name=phpmyadmin question='phpmyadmin/mysql/app-pass' value='{{mysqlRootPassword}}' vtype='password'
+      tags: [ phpmyadmin ]
+
+    - name: debconf for pma
+      debconf: name=phpmyadmin question='phpmyadmin/reconfigure-webserver' value='' vtype='multiselect'
+      tags: [ phpmyadmin ]
+
+    - name: install pma
+      apt: pkg=phpmyadmin state=present
+      tags: [ phpmyadmin ]      
+
+    - name: configure site
+      file: path=/var/www/phpmyadmin src=/usr/share/phpmyadmin state=link
+      tags: [ phpmyadmin ]
+    
+    - name: Update apache2.conf for phpmyadmin
+      lineinfile:
+        dest: /etc/apache2/apache2.conf
+        line: "Include /etc/phpmyadmin/apache.conf"      
+      tags: [ phpmyadmin ]
+
+    - name: Activar htaccess en phpMyAdmin
+      ansible.builtin.lineinfile:
+        path: /etc/phpmyadmin/apache.conf
+        insertafter: "DirectoryIndex index.php"
+        line: "    AllowOverride All"
+
+#htaccess
+    - name: Crear archivo .htaccess
+      copy:
+        dest: "{{ phpmyadmin_dir }}/.htaccess"
+        content: |
+          AuthType Basic
+          AuthName "Acceso Restringido"
+          AuthUserFile {{ htpasswd_file }}
+          Require valid-user
+        owner: www-data
+        group: www-data
+        mode: 0640
+      tags: [ phpmyadmin ]
+
+    - name: Crear archivo .htaccess
+      copy:
+        dest: "{{ phpmyadmin_dir }}/.htaccess"
+        content: |
+          AuthType Basic
+          AuthName "Acceso Restringido"
+          AuthUserFile {{ htpasswd_file }}
+          Require valid-user
+        owner: www-data
+        group: www-data
+        mode: 0640
+      tags: [ phpmyadmin ]
+
+    - name: Install python3-passlib package
+      ansible.builtin.apt:
+        name: python3-passlib
+        state: present
+      become: yes
+      tags: [ phpmyadmin ]
+
+    - name: Crear usuario en .htpasswd
+      htpasswd:
+        path: "{{ htpasswd_file }}"
+        name: "{{ phpmyadminUser }}"
+        password: "{{ phpmyadminPass }}"
+        crypt_scheme: bcrypt  # Encriptación recomendada
+        state: present
+        create: yes
+      tags: [ phpmyadmin ]
+
+    - name: Asegurar permisos del .htpasswd
+      file:
+        path: "{{ htpasswd_file }}"
+        owner: www-data
+        group: www-data
+        mode: 0640
+      tags: [ phpmyadmin ]
+
+    - name: Asegurar permisos del .htpasswd
+      file:
+        path: "{{ htpasswd_file }}"
+        owner: www-data
+        group: www-data
+        mode: 0640
+      tags: [ phpmyadmin ]
+
+    - name: Añadir AllowOverride All al directorio de phpMyAdmin
+      lineinfile:
+        path: "{{ phpmyadmin_conf }}"
+        insertafter: '^<Directory /usr/share/phpmyadmin>'
+        line: '    AllowOverride All'
+        state: present
+      tags: [ phpmyadmin ]
+      
+#Crear databases
+    - name: Crear base de datos loansdb
+      mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysqlRootPassword }}"
+
+    - name: Crear usuario loans y asignar privilegios
+      mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        priv: "{{ db_name }}.*:ALL"
+        host: localhost
+        state: present
+        login_user: root
+        login_password: "{{ mysqlRootPassword }}"
+
+    - name: Forzar recarga de privilegios
+      mysql_query:
+        query: "FLUSH PRIVILEGES"
+        login_user: root
+        login_password: "{{ mysqlRootPassword }}"
+        
+#Descomprimir el Login
+    - name: Instalar dependencias para .tar.gz
+      ansible.builtin.apt:
+        name: [gzip, tar]
+        state: present
+        update_cache: yes
+    - name: Descomprimir TAR.GZ remoto
+      ansible.builtin.unarchive:
+        src: "login.tar.gz"  		# Archivo en el servidor remoto
+        dest: "/var/www/web"
+        remote_src: no                     	# Indica que el archivo no está en el remoto
+#source al sql
+    - name: Ejecutar archivo SQL
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: import  # Indica que es una importación
+        target: "/var/www/web/sql/loansdb.sql"  # Ruta del archivo en el remoto
+        login_user: root
+        login_password: "{{ mysqlRootPassword }}"
+
+    - name: Asignar permisos a www-data en /var/www/web
+      ansible.builtin.file:
+        path: /var/www/web
+        owner: www-data
+        group: www-data
+        recurse: yes
+        mode: 'u=rwX,g=rwX,o=rX'
+
+    - name: Asignar permisos a www-data en /var/www/vars.yml
+      ansible.builtin.file:
+        path: /var/www/web/ansible/vars/vars.yml
+        owner: www-data
+        group: www-data
+#tamaño de la descarga
+    - name: Modificar upload_max_filesize en php.ini
+      lineinfile:
+        path: "/etc/php/8.1/apache2/php.ini"
+        regexp: '^upload_max_filesize ='
+        line: 'upload_max_filesize = 512M'
+
+    - name: Modificar post_max_size en php.ini
+      lineinfile:
+        path: "/etc/php/8.1/apache2/php.ini"
+        regexp: '^post_max_size'
+        line: 'post_max_size = 512M'
+#Reiniciar
+    - name: Reiniciar Nginx para aplicar cambios
+      service:
+        name: nginx
+        state: restarted
+      become: yes     
+    - name: Reiniciar Apache para aplicar cambios
+      service:
+        name: apache2
+        state: restarted
+      become: yes     

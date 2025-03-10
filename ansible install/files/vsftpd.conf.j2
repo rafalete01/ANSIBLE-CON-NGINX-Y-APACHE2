@@ -1,0 +1,24 @@
+listen=YES
+anonymous_enable=NO
+local_enable=YES
+write_enable=YES
+local_umask=022
+chroot_local_user=YES
+allow_writeable_chroot=YES
+user_config_dir=/etc/vsftpd/userconfig
+guest_enable=YES
+virtual_use_local_privs=YES
+pam_service_name=vsftpd
+nopriv_user=vsftpd
+guest_username=vsftpd
+# 🔒 Configuración FTPS
+ssl_enable=YES
+rsa_cert_file=/etc/ssl/private/vsftpd.pem
+rsa_private_key_file=/etc/ssl/private/vsftpd.pem
+force_local_logins_ssl=YES
+force_local_data_ssl=YES
+ssl_tlsv1=YES
+ssl_sslv2=NO
+ssl_sslv3=NO
+require_ssl_reuse=NO
+ssl_ciphers=HIGH

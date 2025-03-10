@@ -1,0 +1,20 @@
+---
+# SOFTWARE
+phpModules: [ 'php-curl', 'php-gd', 'php-mbstring', 'php-xml', 'php-xmlrpc', 'php-soap', 'php-intl', 'php-zip', 'php-imagick' ]
+# MYSQL
+mysqlRootPassword: "root"
+db_name: "loansdb"
+db_user: "loansu"
+db_password: "loansu"
+# DOMINIOS
+domainNames: "ansible"
+# FTP
+ftpUser: "ftpu"
+ftpPass: "ftpu"
+ftpUserRoot: "/var/www/web"
+# PHPMYADMIN
+phpmyadminUser: "admin"
+phpmyadminPass: "admin"
+phpmyadmin_dir: "/var/www/phpmyadmin"
+htpasswd_file: "/etc/apache2/.htpasswd"
+phpmyadmin_conf: "/etc/phpmyadmin/apache.conf"

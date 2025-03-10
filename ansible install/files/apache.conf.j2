@@ -1,0 +1,18 @@
+<VirtualHost 127.0.0.1:8080>
+    ServerAdmin webmaster@localhost
+    ServerName {{ domainNames }}
+    ServerAlias {{ domainNames }}
+    DocumentRoot /var/www/web
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
+
+    <Directory /var/www/web>
+          Options -Indexes
+          AllowOverride All
+    </Directory>
+
+    <IfModule mod_dir.c>
+        DirectoryIndex index.php index.html index.cgi index.pl  index.xhtml index.htm
+    </IfModule>
+
+</VirtualHost>
