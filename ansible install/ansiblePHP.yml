@@ -9,7 +9,7 @@
 
 # Copiar la aplicacion web al server
 # nginx -> phpmyadmin
-- hosts: all
+- hosts: localhost
   become: yes
   vars_files:
     - vars/vars.yml
